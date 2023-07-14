@@ -40,10 +40,10 @@ The script has several options to be adapted to your environment:
 `SMIP=192.168.60.7`
 
 - SmartMeter user (Tasmota)<br />
-`SMUSER=admin
+`SMUSER=admin`
 
 - SmartMeter password (Tasmota)<br />
-`SMPASS=password
+`SMPASS=password`
 
 - DTU IP (OpenDTU) (update for your local network setup)<br />
 `DTUIP=192.168.60.5`
