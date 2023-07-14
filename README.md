@@ -1,6 +1,6 @@
 # zerofeed
 
-Zerofeed solar power control shell script for OpenDTU / Tasmota / OpenWrt
+Zerofeed solar power control shell script for OpenDTU / Tasmota / OpenWrt with Shelly 3EM
 
 - https://github.com/tbnobody/OpenDTU
 - https://github.com/tasmota
@@ -12,6 +12,8 @@ Zero feed script to make sure the solar modules are reducing their output
 to (ideally) not push any energy into the public network.
 
 Inspired by https://github.com/tbnobody/OpenDTU/blob/master/docs/Web-API.md
+and
+https://github.com/hartkopp/zerofeed/
 
 Needs OpenDTU and the Tasmota smart meter IoT devices in your WLAN and is
 intended to be executed on an OpenWrt router (install curl & jq packages).
@@ -28,7 +30,7 @@ to not bloat any logfiles. `zerofeed-dbg.sh` is the main source code.
 
 Create the 'release' script file without debug output with:
 
-`grep -v echo zerofeed-dbg.h > zerofeed.sh`
+`grep -v echo zerofeed-dbg.sh > zerofeed.sh`
 
 ## Configuration
 
@@ -37,6 +39,12 @@ The script has several options to be adapted to your environment:
 - SmartMeter IP (Tasmota) (update for your local network setup)<br />
 `SMIP=192.168.60.7`
 
+- SmartMeter user (Tasmota)<br />
+`SMUSER=admin
+
+- SmartMeter password (Tasmota)<br />
+`SMPASS=password
+
 - DTU IP (OpenDTU) (update for your local network setup)<br />
 `DTUIP=192.168.60.5`
 
@@ -44,44 +52,68 @@ The script has several options to be adapted to your environment:
 `DTUUSER="admin:openDTU42"`
 
 - DTU serial number (insert your inverter SN here)<br />
-`DTUSN=116180400144`
+`DTUSN=110123456789`
 
 - SmartMeter type adaption:
 
-The code is tested with a Logarex LK13BE (SML) smart meter<br />
-https://tasmota.github.io/docs/Smart-Meter-Interface/#logarex-lk13be-sml-eg-lk13be6067x9<br />
+The code is tested with a Shelly 3EM smart meter<br />
 which provides the current house/flat power consumption (in Watt) with a
-LK13BE specific Web-API answer that has to be adapted in the `getSMPWR()`
+Shelly 3EM specific Web-API answer that has to be adapted in the `getSMPWR()`
 function when a different smart meter is used!
 
-Then the `jq` command with `'.StatusSNS.LK13BE.Power_curr'` has to be changed.
-
-In the current LK13BE environment the full `jq` output looks like this:
+In the current Shelly 3EM environment the full `jq` output looks like this:
 
 ```
-$ curl -s http://192.168.60.7/cm?cmnd=status%208 | jq
+$ curl -s "http://192.168.60.7/cm?user=admin&password=password&cmnd=status%208" | jd
 {
   "StatusSNS": {
-    "Time": "2022-12-19T08:56:05",
-    "LK13BE": {
-      "Power_total_in": 1914.7,
-      "Power_total_out": 0.6,
-      "Power_curr": 509,
-      "Power_L1_curr": 69,
-      "Power_L2_curr": 77,
-      "Power_L3_curr": 362,
-      "Volt_L1_curr": 226.5,
-      "Volt_L2_curr": 226.3,
-      "Volt_L3_curr": 225.6,
-      "Amperage_L1_curr": 0.6,
-      "Amperage_L2_curr": 0.77,
-      "Amperage_L3_curr": 2.06,
-      "HZ": 50,
-      "phase_angle_p1": 304.1,
-      "phase_angle_p2": 298.5,
-      "phase_angle_p3": 327.3,
-      "phase_angle_l2_l1": 239.8,
-      "phase_angle_l3_l1": 120.2
+    "Time": "2023-07-14T11:03:31",
+    "ENERGY": {
+      "TotalStartTime": "2022-12-11T15:29:13",
+      "Total": 2275.777,
+      "Yesterday": 7.685,
+      "Today": 2.477,
+      "ExportActive": [
+        12.617,
+        0,
+        0
+      ],
+      "Power": [
+        -393,
+        179,
+        9
+      ],
+      "ApparentPower": [
+        433,
+        283,
+        29
+      ],
+      "ReactivePower": [
+        180,
+        220,
+        27
+      ],
+      "Factor": [
+        -0.91,
+        0.63,
+        0.3
+      ],
+      "Frequency": [
+        50,
+        50,
+        50
+      ],
+      "Voltage": [
+        238,
+        235,
+        235
+      ],
+      "Current": [
+        1.804,
+        1.196,
+        0.121
+      ],
+      "CurrentNeutral": 0.008
     }
   }
 }
@@ -90,14 +122,15 @@ $ curl -s http://192.168.60.7/cm?cmnd=status%208 | jq
 Which makes the code in `getSMPWR()` produce the power consumption value:
 
 ```
-$ curl -s http://192.168.60.7/cm?cmnd=status%208 | jq '.StatusSNS.LK13BE.Power_curr'
+$ curl -s "http://192.168.60.7/cm?user=admin&password=password&cmnd=status%208" | jq '.StatusSNS.ENERGY.Power[0]'
 509
 ```
 
 Please check your smart meter with the full `jq` output and find the needed
 power consumption in the JSON tree to get the correct string for your smart
-meter for the power value (analogue to the '.StatusSNS.LK13BE.Power_curr'
+meter for the power value (analogue to the '.StatusSNS.ENERGY.Power_curr'
 example) - and update this string in `getSMPWR()` for your local setup.
+I my setup I have to sum all three phases and save them to SMPWR.
 
 ## Installation
 
