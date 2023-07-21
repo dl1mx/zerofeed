@@ -60,9 +60,6 @@ DTUSN=110123456789
 DTUNOLIMRELVAL=100
 DTULIMREL=0
 
-# minimum solar power (Watt) before starting the power control
-SOLMINPWR=100
-
 # limit type absolute (non persistent)
 LTABSNP=0
 # limit type relative (non persistent)
@@ -74,7 +71,8 @@ POLLFAST=5
 
 getSOLPWR()
 {
-    SOLPWR=`curl -s http://$DTUIP/api/livedata/status | jq '.total.Power.v'`
+    # get power from the single selected inverter
+    SOLPWR=`curl -s http://$DTUIP/api/livedata/status | jq '.inverters[] | select(.serial == "'$DTUSN'").AC."0".Power.v'`
     if [ -n "$SOLPWR" ]; then
 	# remove fraction to make it an integer
 	SOLPWR=${SOLPWR%.*}
@@ -87,6 +85,10 @@ getDTUMAXPWR()
     if [ -n "$DTUMAXPWR" ]; then
 	# remove fraction to make it an integer
 	DTUMAXPWR=${DTUMAXPWR%.*}
+	# 2% is the minimum control boundary - so take 3% to be sure
+	DTUMINPWR=$(($DTUMAXPWR / 33))
+	# start control process when having 10W more than the minimum control boundary
+	SOLMINPWR=$(($DTUMINPWR + 10))
     fi
 }
 
@@ -143,6 +145,13 @@ while [ true ]; do
 
     done
 
+    # get maximum power of inverter and fill DTUMINPWR and SOLMINPWR
+    getDTUMAXPWR
+    if [ -z "$DTUMAXPWR" ]; then
+	# no data -> restart process
+	continue
+    fi
+
     # wait for at least some remarkable solar power (SOLMINPWR)
     while [ -n "$SMPWR" ] && [ -n "$SOLPWR" ] && [ "$SOLPWR" -lt "$SOLMINPWR" ]; do
 
@@ -154,13 +163,6 @@ while [ true ]; do
     done
 
     # at this point the inverter is properly powered up
-
-    # get maximum power of inverter
-    getDTUMAXPWR
-    if [ -z "$DTUMAXPWR" ]; then
-	# no data -> restart process
-	continue
-    fi
 
     # check if we need to remove the limiter
     getDTULIMREL
@@ -217,6 +219,11 @@ while [ true ]; do
 	# do not set limits beyond the inverter capabilities
 	if [ "$SOLABSLIMIT" -gt "$DTUMAXPWR" ]; then
 	    SOLABSLIMIT=$DTUMAXPWR
+	fi
+
+	# do not set limits beyond the inverter capabilities
+	if [ "$SOLABSLIMIT" -lt "$DTUMINPWR" ]; then
+	    SOLABSLIMIT=$DTUMINPWR
 	fi
 
 	# only set the limit when the value was changed
