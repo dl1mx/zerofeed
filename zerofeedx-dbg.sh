@@ -39,7 +39,7 @@ ABSLIMITOFFSET=0
 
 # SMPWR threshold to trigger the SOLLASTLIMIT increase
 SMPWRTHRESMAX=50
-SMPWRTHRESMIN=10
+SMPWRTHRESMIN=20
 
 # SmartMeter IP (Tasmota) (update for your local network setup)
 SMIP=192.168.60.7
@@ -51,17 +51,27 @@ DTUIP=192.168.60.5
 DTUUSER="admin:openDTU42"
 
 # DTU serial numbers (insert your inverter SNs here)
-DTUSN=(116180400144 116190745467 116190745954)
+# N.B. the size of this array has to be transferred to the arrays below
+# namely the arrays: DTULIM DTUMAXP DTUMINP DTULASTSOLPWR
+#DTUSN=(116190745467)
+DTUSN=(116190745467 116180400144 116190745954)
 
-# manual limits to override the detected  inverter limits (in Watt) (0 = disabled)
-DTULIM=(0 1000 1000)
+# manual limits to override the detected inverter limits (in Watt) (0 = disabled)
+#DTULIM=(600 800 1000)
+DTULIM=(0 0 0)
 
 # initialize arrays for inverter specific values
 DTUMAXP=(0 0 0)
 DTUMINP=(0 0 0)
 
+# initialize arrays for inverter specific values
+DTULASTSOLPWR=(0 0 0)
+
 MAXDTUIDX=$((${#DTUSN[@]} - 1))
 CURRDTU=0
+
+# the minimum inverter max power (sanity check)
+MINDTUPWR=100
 
 # DTU limiter (should be this at 100% after > 0W start)
 DTULIMREL=0
@@ -71,24 +81,59 @@ LTABSNP=0
 # limit type relative (non persistent)
 LTRELNP=1
 
-# poll interval
-POLLNORMAL=5
-POLLFAST=5
-
 getSOLPWR()
 {
     # get power from the single selected inverter
-    SOLPWR=`curl -s http://$DTUIP/api/livedata/status | jq '.inverters[] | select(.serial == "'${DTUSN[$CURRDTU]}'").AC."0".Power.v'`
-    if [ -n "$SOLPWR" ]; then
+    #SOLPWR=`curl -s http://$DTUIP/api/livedata/status | jq '.inverters[] | select(.serial == "'${DTUSN[$CURRDTU]}'").AC."0".Power.v'`
+    read -d "\n" SOLALLPWR YIELDDAY SOLPWR <<< `curl -s http://$DTUIP/api/livedata/status | jq '.total.Power.v, .total.YieldDay.v, (.inverters[] | select(.serial == "'${DTUSN[$CURRDTU]}'").AC."0".Power.v)'`
+    if [ -n "$SOLPWR" ]
+    then
 	# remove fraction to make it an integer
 	SOLPWR=${SOLPWR%.*}
+	DTULASTSOLPWR[$CURRDTU]=$SOLPWR
     fi
+    if [ -n "$SOLALLPWR" ]
+    then
+	# remove fraction to make it an integer
+	SOLALLPWR=${SOLALLPWR%.*}
+    fi
+}
+
+waitDTUpowerUp()
+{
+    NOPOWER=1
+    while [ "$NOPOWER" -eq "1" ]
+    do
+	NOPOWER=0
+	CURRDTU=0
+	while [ "$CURRDTU" -le "$MAXDTUIDX" ]
+	do
+	    getSOLPWR
+	    if [ -z "$SOLPWR" ] || [ "$SOLPWR" -lt "5" ]
+	    then
+		echo `date +#P\ %d.%m.%y\ %T`" NOPOWER for DTU "$CURRDTU" ("$SOLPWR"W)"
+		NOPOWER=1
+		break
+	    fi
+	    ((CURRDTU+=1))
+	done
+	if [ -z "$SOLPWR" ]
+	then
+	    NOPOWER=1
+	    break
+	fi
+	if [ "$NOPOWER" -eq "1" ]
+	then
+	    sleep 60
+	fi
+    done
 }
 
 getDTUMAXPWR()
 {
     DTUMAXPWR=`curl -s http://$DTUIP/api/limit/status | jq '."'${DTUSN[$CURRDTU]}'".max_power'`
-    if [ -n "$DTUMAXPWR" ]; then
+    if [ -n "$DTUMAXPWR" ]
+    then
 	# remove fraction to make it an integer
 	DTUMAXP[$CURRDTU]=${DTUMAXPWR%.*}
 	echo "DTUMAXP["$CURRDTU"] = "${DTUMAXP[$CURRDTU]}
@@ -101,7 +146,8 @@ getDTUMAXPWR()
 getDTULIMREL()
 {
     DTULIMREL=`curl -s http://$DTUIP/api/limit/status | jq '."'${DTUSN[$CURRDTU]}'".limit_relative'`
-    if [ -n "$DTULIMREL" ]; then
+    if [ -n "$DTULIMREL" ]
+    then
 	# remove fraction to make it an integer
 	DTULIMREL=${DTULIMREL%.*}
     fi
@@ -110,8 +156,10 @@ getDTULIMREL()
 # get current power via 'status 8' from Tasmota (for LK13BE smart meter)
 getSMPWR()
 {
-    SMPWR=`curl -s http://$SMIP/cm?cmnd=status%208 | jq '.StatusSNS.LK13BE.Power_curr'`
-    if [ -n "$SMPWR" ]; then
+    #SMPWR=`curl -s http://$SMIP/cm?cmnd=status%208 | jq '.StatusSNS.LK13BE.Power_curr'`
+    read -d "\n" SMPWR SMPWRIN SMPWROUT <<< `curl -s http://$SMIP/cm?cmnd=status%208 | jq '.StatusSNS.LK13BE | .Power_curr,.Power_total_in,.Power_total_out'`
+    if [ -n "$SMPWR" ]
+    then
 	# remove fraction to make it an integer
 	SMPWR=${SMPWR%.*}
     fi
@@ -121,7 +169,8 @@ getLimitSetStatus()
 {
     SETSTATUS="\"Pending\""
 
-    while [ "$SETSTATUS" = "\"Pending\"" ]; do
+    while [ "$SETSTATUS" = "\"Pending\"" ]
+    do
 	sleep 1
 	SETSTATUS=`curl -s http://$DTUIP/api/limit/status | jq '."'${DTUSN[$CURRDTU]}'".limit_set_status'`
 	# SETSTATUS can be "Ok" or "Pending" or "Failure"
@@ -129,37 +178,62 @@ getLimitSetStatus()
     done
 }
 
-# run initialization and solar power control forever
-while [ true ]; do
+printState()
+{
+    echo -n `date +%d.%m.%y,%T`","$YIELDDAY","$SOLALLPWR","$SOLPWR","$SMPWR","$SMPWRIN","$SMPWROUT","$SOLABSLIMIT","$SOLLASTLIMIT","$ABSLIMITOFFSET","$SMPWRTHRESMIN","$SMPWRTHRESMAX","$MAXDTUIDX","$CURRDTU
+    #cho -n `date +%d.%m.%y,%T`","$YIELDDAY","$SOLALLPWR","$SOLPWR","$SMPWR","$SMPWRIN","$SMPWROUT","$SOLABSLIMIT","$SOLLASTLIMIT","$ABSLIMITOFFSET","$SMPWRTHRESMIN","$SMPWRTHRESMAX","$MAXDTUIDX","$CURRDTU > /var/run/zerofeed.state
 
+    PRINTDTU=0
+    while [ "$PRINTDTU" -le "$MAXDTUIDX" ]
+    do
+	echo -n ","$PRINTDTU,${DTULASTSOLPWR[$PRINTDTU]}
+	#cho -n ","$PRINTDTU,${DTULASTSOLPWR[$PRINTDTU]} >> /var/run/zerofeed.state
+	((PRINTDTU+=1))
+    done
+
+    echo
+    #cho >> /var/run/zerofeed.state
+}
+
+# run initialization and solar power control forever
+while [ true ]
+do
     echo `date +#I\ %d.%m.%y\ %T`
+    CURRDTU=0
     getSOLPWR
-    getDTUMAXPWR
     getSMPWR
     getDTULIMREL
     echo "initSOLPWR="$SOLPWR
-    echo "initDTUMAXPWR="$DTUMAXPWR
     echo "initSMPWR="$SMPWR
     echo "initDTULIMREL="$DTULIMREL
 
     # wait until curl succeeds
-    while [ -z "$SOLPWR" ] || [ -z "$SMPWR" ]; do
-
+    while [ -z "$SOLPWR" ] || [ -z "$SMPWR" ]
+    do
 	echo `date +#W\ %d.%m.%y\ %T`
 	echo "Wait for devices"
-	sleep 2
+	sleep 10
 	getSOLPWR
 	getSMPWR
 
     done
 
-    # get maximum power of inverters and fill DTUMAXP[] &  DTUMINP[]
+    waitDTUpowerUp
+    if [ "$NOPOWER" -eq "1" ]
+    then
+	echo restart waitDTUpowerUp
+	continue
+    fi
+    echo waitDTUpowerUp done
+
+    # get maximum power of inverters and fill DTUMAXP[] & DTUMINP[]
     RESTART=0
     CURRDTU=0
     while [ "$CURRDTU" -le "$MAXDTUIDX" ]
     do
 	getDTULIMREL
-	if [ -z "$DTULIMREL" ]; then
+	if [ -z "$DTULIMREL" ]
+	then
 	    # no data -> restart process
 	    RESTART=1
 	    break
@@ -167,8 +241,9 @@ while [ true ]; do
 	echo "DTULIMREL["$CURRDTU"] = "$DTULIMREL"%"
 
 	getDTUMAXPWR
-	if [ -z "$DTUMAXPWR" ]; then
-	    # no data -> restart process
+	if [ -z "$DTUMAXPWR" ] || [ "${DTUMAXP[$CURRDTU]}" -lt "$MINDTUPWR" ]
+	then
+	    # no data / weird inverter -> restart process
 	    RESTART=1
 	    break
 	fi
@@ -189,34 +264,26 @@ while [ true ]; do
 	continue
     fi
 
-    # start control process when having 10W more than the minimum control boundary
-    SOLMINPWR=$((${DTUMINP[0]} + 10))
-    echo "SOLMINPWR="$SOLMINPWR
-
-    # at this point the inverters are properly powered up
-
     # set OK value if we do not need to set the relative limit
     SETSTATUS="\"Ok\""
 
-    # set limiter of first inverter to its maximum and the rest to minimum
+    # set limiters to start from the bottom
+    echo
+    echo `date +#L\ %d.%m.%y\ %T`
+    echo init non permanent limits on all inverters
     RESTART=0
     CURRDTU=0
     while [ "$CURRDTU" -le "$MAXDTUIDX" ]
     do
-	if [ "$CURRDTU" -eq "0" ]
-	then
-	    INITLIM=${DTUMAXP[$CURRDTU]}
-	else
-	    INITLIM=${DTUMINP[$CURRDTU]}
-	fi
-	echo setting non permanent limit for inverter $CURRDTU to $INITLIM W
-	SETLIM=`curl -u "$DTUUSER" http://$DTUIP/api/limit/config -d 'data={"serial":"'${DTUSN[$CURRDTU]}'", "limit_type":'$LTABSNP', "limit_value":'$INITLIM'}' 2>/dev/null | jq '.type'`
+	echo setting non permanent limit for inverter $CURRDTU to ${DTUMINP[$CURRDTU]} W
+	SETLIM=`curl -u "$DTUUSER" http://$DTUIP/api/limit/config -d 'data={"serial":"'${DTUSN[$CURRDTU]}'", "limit_type":'$LTABSNP', "limit_value":'${DTUMINP[$CURRDTU]}'}' 2>/dev/null | jq '.type'`
 	echo "SETLIM="$SETLIM
 	getLimitSetStatus
 
 	# SETSTATUS can be "Ok" or "Failure" here
-	if [ "$SETSTATUS" != "\"Ok\"" ]; then
-	    echo setting the absolute limit of first inverter failed
+	if [ "$SETSTATUS" != "\"Ok\"" ]
+	then
+	    echo setting the absolute limit of inverter failed
 	    RESTART=1
 	    break
 	fi
@@ -232,39 +299,35 @@ while [ true ]; do
     CURRDTU=0
     getSOLPWR
     getSMPWR
-    # wait for at least some remarkable solar power (SOLMINPWR)
-    while [ -n "$SMPWR" ] && [ -n "$SOLPWR" ] && [ "$SOLPWR" -lt "$SOLMINPWR" ]; do
-
-	echo `date +#P\ %d.%m.%y\ %T`
-	echo "Wait for "$SOLMINPWR"W solar power"
-	echo "SOLPWR="$SOLPWR
-	sleep 10
-	getSOLPWR
-	getSMPWR
-	#cho `date +%d.%m.%y,%T`","$SOLPWR","$SMPWR","$SOLABSLIMIT","$SOLLASTLIMIT","$ABSLIMITOFFSET","$SMPWRTHRESMIN","$SMPWRTHRESMAX > /var/run/zerofeed.state
-
-    done
+    # last check before starting the control loop
+    if [ -z "$SMPWR" ] || [ -z "$SOLPWR" ]
+    then
+	echo restart before control loop
+	continue
+    fi
 
     # start from the top
-    SOLLASTLIMIT=${DTUMAXP[$CURRDTU]}
+    SOLLASTLIMIT=$((${DTUMAXP[$CURRDTU]} + 1))
 
     # main control loop
-    while [ -n "$SMPWR" ] && [ -n "$SOLPWR" ]; do
-
-	MAINSLEEP=$POLLNORMAL
-
+    while [ -n "$SMPWR" ] && [ -n "$SOLPWR" ]
+    do
+	echo
 	echo `date +#C\ %d.%m.%y\ %T`
+	echo "SOLALLPWR="$SOLALLPWR
 	echo "SOLPWR="$SOLPWR
+	echo "CURRDTU="$CURRDTU
 	echo "SMPWR="$SMPWR
 	echo "SOLLASTLIMIT="$SOLLASTLIMIT
 	echo "SOLABSLIMIT="$SOLABSLIMIT
-	echo "ABSLIMITOFFSET="$ABSLIMITOFFSET
 
-	if [ "$SMPWR" -lt "$SMPWRTHRESMIN" ]; then
+	if [ "$SMPWR" -lt "$SMPWRTHRESMIN" ]
+	then
 	    # calculate inverter limit to stop feeding into public network
 	    SOLABSLIMIT=$(($SMPWR + $SOLPWR - $SMPWRTHRESMIN + $ABSLIMITOFFSET))
 	    echo "set SOLABSLIMIT="$SOLABSLIMIT
-	elif [ "$SMPWR" -gt "$SMPWRTHRESMAX" ]; then
+	elif [ "$SMPWR" -gt "$SMPWRTHRESMAX" ]
+	then
 	    # the system power consumption is higher than our defined threshold
 	    # => we could safely increase the current SOLLASTLIMIT by SMPWR
 	    #    until DTUMAXPWR is reached (see following if-statement).
@@ -273,7 +336,8 @@ while [ true ]; do
 	    # As there was a weird oscillation observed with real SMPWR values
 	    # we make smaller steps with SMPWRTHRESMAX towards DTUMAXPWR instead.
 	    # When SMPWR is 'really big' we jump half of the SMPWR value.
-	    if [ "$SMPWR" -gt $((2 * $SMPWRTHRESMAX)) ]; then
+	    if [ "$SMPWR" -gt $((2 * $SMPWRTHRESMAX)) ]
+	    then
 		PWRINCR=$(($SMPWR / 2))
 	    else
 		PWRINCR=$SMPWRTHRESMAX
@@ -283,42 +347,49 @@ while [ true ]; do
 	    echo "update SOLABSLIMIT="$SOLABSLIMIT
 	fi
 
+	# when hopping between inverters start with current SMPWR value
+	if [ "$SOLLASTLIMIT" -eq "$((${DTUMAXP[$CURRDTU]} + 1))" ]
+	then
+	    SOLABSLIMIT=$SMPWR
+	    echo "hop detected - set SOLABSLIMIT to SMPWR ("$SOLABSLIMIT")"
+	fi
+
 	# do not set limits beyond the inverter capabilities
-	if [ "$SOLABSLIMIT" -gt "${DTUMAXP[$CURRDTU]}" ]; then
+	if [ "$SOLABSLIMIT" -gt "${DTUMAXP[$CURRDTU]}" ]
+	then
 	    echo Calculated limit $SOLABSLIMIT cropped to ${DTUMAXP[$CURRDTU]}
 	    SOLABSLIMIT=${DTUMAXP[$CURRDTU]}
 	fi
 
 	# do not set limits beyond the inverter capabilities
-	if [ "$SOLABSLIMIT" -lt "${DTUMINP[$CURRDTU]}" ]; then
+	if [ "$SOLABSLIMIT" -lt "${DTUMINP[$CURRDTU]}" ]
+	then
 	    echo Calculated limit $SOLABSLIMIT cropped to ${DTUMINP[$CURRDTU]}
 	    SOLABSLIMIT=${DTUMINP[$CURRDTU]}
 	fi
 
 	# when we moved far away from SOLPOWER -> hop to the maximum
-	if [ "$(($SOLABSLIMIT - $SOLPWR))" -gt "200" ] && [ "$(($SOLABSLIMIT - $SOLLASTLIMIT))" -lt "150" ]; then
+	if [ "$(($SOLABSLIMIT - $SOLPWR))" -gt "200" ] && [ "$(($SOLABSLIMIT - $SOLLASTLIMIT))" -lt "150" ]
+	then
 	    echo Fast hop of inverter $CURRDTU to ${DTUMAXP[$CURRDTU]}
 	    SOLABSLIMIT=${DTUMAXP[$CURRDTU]}
 	fi
 
 	# only set the limit when the value was changed
-	if [ "$SOLABSLIMIT" -ne "$SOLLASTLIMIT" ]; then
+	if [ "$SOLABSLIMIT" -ne "$SOLLASTLIMIT" ]
+	then
 	    SETLIM=`curl -u "$DTUUSER" http://$DTUIP/api/limit/config -d 'data={"serial":"'${DTUSN[$CURRDTU]}'", "limit_type":'$LTABSNP', "limit_value":'$SOLABSLIMIT'}' 2>/dev/null | jq '.type'`
 	    echo "SETLIM="$SETLIM" on inverter "$CURRDTU
 	    getLimitSetStatus
-	    MAINSLEEP=$POLLFAST
 	fi
 
 	# SETSTATUS can be "Ok" or "Failure" here
-	if [ "$SETSTATUS" != "\"Ok\"" ]; then
+	if [ "$SETSTATUS" != "\"Ok\"" ]
+	then
 	    echo setting the abs limit failed
 	    # setting the limit failed -> restart process
 	    break
 	fi
-
-	# generate CSV capable status output
-	echo `date +%d.%m.%y,%T`","$SOLPWR","$SMPWR","$SOLABSLIMIT","$SOLLASTLIMIT","$ABSLIMITOFFSET","$SMPWRTHRESMIN","$SMPWRTHRESMAX
-	#cho `date +%d.%m.%y,%T`","$SOLPWR","$SMPWR","$SOLABSLIMIT","$SOLLASTLIMIT","$ABSLIMITOFFSET","$SMPWRTHRESMIN","$SMPWRTHRESMAX > /var/run/zerofeed.state
 
 	SOLLASTLIMIT=$SOLABSLIMIT
 
@@ -333,23 +404,35 @@ while [ true ]; do
 	    SOLABSLIMIT=${DTUMINP[$CURRDTU]}
 	else if [ "$SOLABSLIMIT" -eq "${DTUMAXP[$CURRDTU]}" ] && [ "$CURRDTU" -lt "$MAXDTUIDX" ]
 	     then
-		 echo -n "step up from inverter "$CURRDTU" "
+		 echo -n "step up from inverter "$CURRDTU
 		 ((CURRDTU+=1))
 		 echo " to inverter "$CURRDTU
-		 SOLLASTLIMIT=${DTUMINP[$CURRDTU]}
+		 SOLLASTLIMIT=$((${DTUMAXP[$CURRDTU]} + 1))
 		 # set a default value when SMPWRTHRESMIN < SOLPWR < SMPWRTHRESMAX
 		 SOLABSLIMIT=${DTUMINP[$CURRDTU]}
 	     fi
 	fi
 
-	sleep $MAINSLEEP
-	getSOLPWR
+	# generate CSV capable status output
+	printState
+
 	getSMPWR
+	SOLTIMEOUT=4
+	while [ -n "$SMPWR" ] && [[ "$SMPWR" -gt "$SMPWRTHRESMIN" ]] && [ "$SOLTIMEOUT" -gt "0" ]
+	do
+	    sleep 1
+	    getSMPWR
+	    ((SOLTIMEOUT-=1))
+	    printState
+	done
+
+	getSOLPWR
 
 	# restart whole process
-	if [ "$SOLPWR" -eq 0 ] || [ "$DTUMAXPWR" -eq 0 ]; then
+	if [ -z "$SOLPWR" ] || [ "$SOLPWR" -eq "0" ] || [ -z "$SMPWR" ]
+	then
 	    unset SOLPWR
-	    unset DTUMAXPWR
+	    unset SMPWR
 	    break
 	fi
 
