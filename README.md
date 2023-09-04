@@ -64,7 +64,7 @@ function when a different smart meter is used!
 In the current Shelly 3EM environment the full `jq` output looks like this:
 
 ```
-$ curl -s "http://192.168.60.7/cm?user=admin&password=password&cmnd=status%208" | jd
+$ curl -s "http://192.168.60.7/cm?user=admin&password=password&cmnd=status%208" | jq
 {
   "StatusSNS": {
     "Time": "2023-07-14T11:03:31",
