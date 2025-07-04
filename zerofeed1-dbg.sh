@@ -41,6 +41,12 @@ SMPWRTHRESMIN=10
 # SmartMeter IP (Tasmota) (update for your local network setup)
 SMIP=192.168.60.7
 
+# SmartMeter user (Tasmota)
+SMUSER=admin
+
+# SmartMeter password (Tasmota)
+SMPASS=password
+
 # DTU IP (OpenDTU) (update for your local network setup)
 DTUIP=192.168.60.5
 
@@ -95,13 +101,20 @@ getDTULIMREL()
     fi
 }
 
-# get current power via 'status 8' from Tasmota (for LK13BE smart meter)
+# get current power via 'status 8' from Tasmota (for Shelly 3EM smart meter)
 getSMPWR()
 {
-    SMPWR=`curl -s http://$SMIP/cm?cmnd=status%208 | jq '.StatusSNS.LK13BE.Power_curr'`
-    if [ -n "$SMPWR" ]; then
-	# remove fraction to make it an integer
-	SMPWR=${SMPWR%.*}
+    SMSTT=`curl -s "http://$SMIP/cm?user=$SMUSER&password=$SMPASS&cmnd=status%208"`
+    SMPWR1=`echo $SMSTT | jq '.StatusSNS.ENERGY.Power[0]'`
+    SMPWR2=`echo $SMSTT | jq '.StatusSNS.ENERGY.Power[1]'`
+    SMPWR3=`echo $SMSTT | jq '.StatusSNS.ENERGY.Power[2]'`
+    if [ -n "$SMPWR1" ] && [ -n "$SMPWR2" ] && [ -n "$SMPWR3" ]; then
+        SMPWR=$(($SMPWR1+$SMPWR2+$SMPWR3))
+        if [ -n "$SMPWR" ]
+		then
+        	# remove fraction to make it an integer
+        	SMPWR=${SMPWR%.*}
+        fi
     fi
 }
 

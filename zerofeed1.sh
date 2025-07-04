@@ -41,6 +41,12 @@ SMPWRTHRESMIN=10
 # SmartMeter IP (Tasmota) (update for your local network setup)
 SMIP=192.168.60.7
 
+# SmartMeter user (Tasmota)
+SMUSER=admin
+
+# SmartMeter password (Tasmota)
+SMPASS=password
+
 # DTU IP (OpenDTU) (update for your local network setup)
 DTUIP=192.168.60.5
 
