@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Zero feed script to make sure the solar modules are reducing their output
 # to (ideally) not push any energy into the public network.
